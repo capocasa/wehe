@@ -1,0 +1,5 @@
+/build/
+nimcache/
+*.exe
+/wehe
+/tools/import_andrews
