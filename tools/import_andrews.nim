@@ -1,6 +1,9 @@
-# Import Andrews 1865 Hawaiian Dictionary from Internet Archive OCR text.
+# Regenerate the vendored Andrews 1865 dictionary from Internet Archive OCR.
+# Output is a sorted plain-text master that gets staticRead-embedded into the
+# binary at compile time. Run only when updating the dictionary itself.
+#
 # Generates:
-#   build/andrews1865.txt — plain text master (sorted, human-editable)
+#   src-asset/andrews1865.txt — vendored, hand-editable, embedded at build
 #
 # Usage: nimble importAndrews
 
@@ -9,8 +12,8 @@ import wehe/decompose
 
 const
   djvuUrl  = "https://archive.org/download/dictionaryofhawa00andrrich/dictionaryofhawa00andrrich_djvu.txt"
-  rawCache = "build/.cache/andrews1865_djvu.txt"
-  txtOut   = "build/andrews1865.txt"
+  rawCache = ".cache/andrews1865_djvu.txt"
+  txtOut   = "src-asset/andrews1865.txt"
 
 # POS abbreviations found in Andrews 1865
 const posAbbrevs = [
@@ -68,7 +71,7 @@ proc fetchOrLoad(): string =
   })
   defer: client.close()
   result = client.getContent(djvuUrl)
-  createDir("build/.cache")
+  createDir(".cache")
   writeFile(rawCache, result)
   stderr.writeLine "cached to " & rawCache
 

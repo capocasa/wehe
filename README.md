@@ -29,14 +29,11 @@ ipu
 
 ```
 nimble install https://github.com/capocasa/wehe
-nimble importAndrews   # fetches Andrews 1865 from Internet Archive (~2MB)
 wehe haipule
 ```
 
-`importAndrews` is a one-shot. It writes `build/andrews1865.txt`, a
-sorted plain-text master (headword + indented sense lines). The binary
-reads that file at runtime; you can edit it by hand if the OCR misread
-something.
+The dictionary is baked into the binary at compile time. No data files,
+no setup, no `--db` to point at. Just the binary.
 
 ## Serve
 
@@ -51,14 +48,30 @@ JSON endpoints:
 
 CORS is wide open. It's a dictionary, not a bank.
 
-## Source
+## Dictionary
 
-The dictionary is Lorrin Andrews, *A Dictionary of the Hawaiian Language*
-(Honolulu: Henry M. Whitney, 1865). Public domain. The OCR comes from
-Internet Archive and is imperfect; small-caps `V` is consistently a
-misread `U` (Hawaiian has no `v`), so the importer rewrites it. Other
-OCR sins are still in there — patches welcome.
+The bundled dictionary is Lorrin Andrews, *A Dictionary of the Hawaiian
+Language* (Honolulu: Henry M. Whitney, 1865) — about 15,500 headwords and
+40,000 senses. **Public domain.** Andrews predates the modern okina/kahakō
+orthography, so headwords are bare ASCII; the lookup is fuzzy on okina and
+macrons regardless.
+
+Source text comes from the Internet Archive OCR of the original
+([dictionaryofhawa00andrrich](https://archive.org/details/dictionaryofhawa00andrrich)).
+The vendored copy lives at `src-asset/andrews1865.txt` and is `staticRead`-
+embedded into the binary; edit it directly to fix OCR sins (the OCR has
+many — small-caps `V` was always a misread `U`, for instance, and the
+importer rewrites those, but plenty slip through).
+
+To regenerate from upstream:
+
+```
+nimble importAndrews
+```
+
+That re-fetches the OCR (cached in `.cache/`), re-parses, and overwrites
+`src-asset/andrews1865.txt`. Commit the diff if it improves things.
 
 ## License
 
-MIT.
+MIT. The dictionary itself is public domain.

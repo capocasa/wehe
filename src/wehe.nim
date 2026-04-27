@@ -8,12 +8,14 @@ type
     tab:  Table[string, seq[Match]]
     keys: seq[string]   # sorted, for prefix search
 
+const embeddedDict = staticRead("../src-asset/andrews1865.txt")
+
 # ─── Dictionary ───────────────────────────────────────────────────────────────
 
-proc loadDict*(path: string): Dict =
+proc parseDict(text: string): Dict =
   var tab = initTable[string, seq[Match]]()
   var cur = ""
-  for line in path.lines:
+  for line in text.splitLines:
     if line.len == 0 or line.startsWith('#'):
       cur = ""; continue
     if line.startsWith("  "):
@@ -25,6 +27,11 @@ proc loadDict*(path: string): Dict =
       cur = line.strip
   result.tab  = tab
   result.keys = toSeq(tab.keys).sorted
+
+proc loadDict*(path = ""): Dict =
+  ## Empty path → embedded Andrews 1865. Otherwise read from disk.
+  let text = if path.len > 0: readFile(path) else: embeddedDict
+  parseDict(text)
 
 proc lookup*(d: Dict; word: string): seq[Match] =
   let key = normalizeKey(word)
@@ -112,10 +119,6 @@ proc serveStatic(path, webDir: string): (HttpCode, string, string) =
   (Http200, readFile(full), ct)
 
 proc serveMode(port: int; dictPath, webDir: string) =
-  if not fileExists(dictPath):
-    stderr.writeLine "error: dictionary not found at " & dictPath
-    stderr.writeLine "run: nimble importAndrews"
-    quit(1)
   let d = loadDict(dictPath)
   stderr.writeLine "loaded " & $d.keys.len & " headwords"
   var server = newAsyncHttpServer()
@@ -143,7 +146,7 @@ proc serveMode(port: int; dictPath, webDir: string) =
 proc main() =
   if paramCount() >= 1 and paramStr(1) == "serve":
     var port     = 8765
-    var dictPath = "build/andrews1865.txt"
+    var dictPath = ""
     var webDir   = ""
     var i = 2
     while i <= paramCount():
@@ -162,12 +165,7 @@ proc main() =
     quit(1)
 
   let word     = paramStr(1)
-  let dictPath = if paramCount() >= 2: paramStr(2) else: "build/andrews1865.txt"
-  if not fileExists(dictPath):
-    stderr.writeLine "error: dictionary not found at " & dictPath
-    stderr.writeLine "run: nimble importAndrews"
-    quit(1)
-
+  let dictPath = if paramCount() >= 2: paramStr(2) else: ""
   let d = loadDict(dictPath)
   let matches = decomposeLookup(d, word)
   if matches.len == 0:
