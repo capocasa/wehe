@@ -7,13 +7,12 @@
 #
 # Usage: nimble importAndrews
 
-import std/[httpclient, strutils, os, tables, algorithm, sequtils]
+import std/[httpclient, strutils, tables, algorithm, sequtils]
 import wehe/decompose
 
 const
-  djvuUrl  = "https://archive.org/download/dictionaryofhawa00andrrich/dictionaryofhawa00andrrich_djvu.txt"
-  rawCache = ".cache/andrews1865_djvu.txt"
-  txtOut   = "src-asset/andrews1865.txt"
+  djvuUrl = "https://archive.org/download/dictionaryofhawa00andrrich/dictionaryofhawa00andrrich_djvu.txt"
+  txtOut  = "src-asset/andrews1865.txt"
 
 # POS abbreviations found in Andrews 1865
 const posAbbrevs = [
@@ -60,20 +59,14 @@ proc isPageHeader(line: string): bool =
     if not c.isUpperAscii: return false
   true
 
-proc fetchOrLoad(): string =
-  if fileExists(rawCache):
-    stderr.writeLine "using cached " & rawCache
-    return readFile(rawCache)
+proc fetch(): string =
   stderr.writeLine "downloading Andrews 1865 OCR..."
   let client = newHttpClient()
   client.headers = newHttpHeaders({
     "User-Agent": "wehe/1.0 (personal research; andrews1865 public domain)"
   })
   defer: client.close()
-  result = client.getContent(djvuUrl)
-  createDir(".cache")
-  writeFile(rawCache, result)
-  stderr.writeLine "cached to " & rawCache
+  client.getContent(djvuUrl)
 
 proc parseAndrews(text: string): OrderedTable[string, seq[string]] =
   ## Returns: normalized_key → seq[full_entry_text]
@@ -123,7 +116,7 @@ proc writeTxt(entries: OrderedTable[string, seq[string]]) =
   stderr.writeLine "wrote " & txtOut
 
 proc main() =
-  let text = fetchOrLoad()
+  let text = fetch()
   stderr.writeLine "parsing..."
   let entries = parseAndrews(text)
   let total = entries.len

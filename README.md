@@ -69,7 +69,7 @@ To regenerate from upstream:
 nimble importAndrews
 ```
 
-That re-fetches the OCR (cached in `.cache/`), re-parses, and overwrites
+That re-fetches the OCR, re-parses, and overwrites
 `src-asset/andrews1865.txt`. Commit the diff if it improves things.
 
 ## License
