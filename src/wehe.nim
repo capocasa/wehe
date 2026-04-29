@@ -1,6 +1,33 @@
-import std/[os, strutils, terminal, tables, algorithm, sequtils,
-            asynchttpserver, asyncdispatch, json, uri]
+import std/[os, strutils, tables, algorithm, sequtils, json, uri]
+import mummy, mummy/routers
 import wehe/decompose
+
+const Version = staticRead("../wehe.nimble").splitLines().filterIt(it.startsWith("version")).
+    mapIt(it.split("=")[1].strip().strip(chars = {'"'}))[0]
+
+const Usage = """
+wehe, Hawaiian word decomposition daemon
+
+Usage:
+  wehe [--port N] [--origin URL ...]
+  wehe -h | --help
+  wehe -v | --version
+
+Options:
+  --port N        Port to listen on (default: 8765)
+  --origin URL    Allowed CORS origin (repeatable). Default: * (any).
+                  Pass an exact origin like https://example.com to restrict.
+  -h, --help      Show this help and exit
+  -v, --version   Show version and exit
+
+Endpoints:
+  GET /api/lookup?q=WORD         syllabification + sub-word matches
+  GET /api/autocomplete?q=PFX    top 10 prefix matches
+"""
+
+proc die(msg: string, code = 2) {.noreturn.} =
+  stderr.writeLine "wehe: " & msg
+  quit code
 
 type
   Match* = tuple[word: string; definition: string]
@@ -8,9 +35,7 @@ type
     tab:  Table[string, seq[Match]]
     keys: seq[string]   # sorted, for prefix search
 
-const embeddedDict = staticRead("../src-asset/andrews1865.txt")
-
-# ─── Dictionary ───────────────────────────────────────────────────────────────
+const embeddedDict = staticRead("../src-asset/andrews1922.txt")
 
 proc parseDict(text: string): Dict =
   var tab = initTable[string, seq[Match]]()
@@ -28,155 +53,120 @@ proc parseDict(text: string): Dict =
   result.tab  = tab
   result.keys = toSeq(tab.keys).sorted
 
-proc loadDict*(path = ""): Dict =
-  ## Empty path → embedded Andrews 1865. Otherwise read from disk.
-  let text = if path.len > 0: readFile(path) else: embeddedDict
-  parseDict(text)
-
 proc lookup*(d: Dict; word: string): seq[Match] =
   let key = normalizeKey(word)
   if key in d.tab: result = d.tab[key]
 
 proc decomposeLookup*(d: Dict; word: string): seq[Match] =
+  for m in lookup(d, word):
+    result.add m
+  var rest: seq[Match]
+  let key = normalizeKey(word)
   for cand in candidates(word):
-    result.add lookup(d, cand)
+    if normalizeKey(cand) == key: continue
+    rest.add lookup(d, cand)
+  rest.sort(proc(a, b: Match): int =
+    cmp(syllabify(b.word).len, syllabify(a.word).len))
+  result.add rest
 
-# ─── CLI display ──────────────────────────────────────────────────────────────
+let dict = parseDict(embeddedDict)
 
-proc wordWrap(text: string; width: int; indent: int): string =
-  let pad = ' '.repeat(indent)
-  var line = pad
-  for word in text.splitWhitespace():
-    if line.len + word.len + 1 > width and line.strip.len > 0:
-      result.add(line.strip(trailing = false) & "\n")
-      line = pad & word
-    else:
-      if line == pad: line.add(word)
-      else: line.add(" " & word)
-  if line.strip.len > 0:
-    result.add(line.strip(trailing = false))
+var allowedOrigins: seq[string] = @[]
 
-proc printMatch(m: Match; width: int; color: bool) =
-  if color: stdout.styledWriteLine(styleBright, m.word)
-  else: echo m.word
-  echo wordWrap(m.definition, width, 2)
-
-# ─── HTTP daemon ──────────────────────────────────────────────────────────────
-
-proc jhdr(): HttpHeaders =
-  newHttpHeaders([
-    ("Content-Type", "application/json; charset=utf-8"),
-    ("Access-Control-Allow-Origin", "*"),
-    ("Access-Control-Allow-Methods", "GET, OPTIONS"),
-  ])
-
-proc fhdr(ct: string): HttpHeaders =
-  newHttpHeaders([("Content-Type", ct), ("Access-Control-Allow-Origin", "*")])
-
-proc qparam(query, key: string): string =
-  for (k, v) in decodeQuery(query):
-    if k == key: return v
-
-proc apiLookup(d: Dict; q: string): string =
-  var sylls = newJArray()
-  for s in syllabify(q): sylls.add(%s)
-  var hits = newJArray()
-  for m in decomposeLookup(d, q):
-    hits.add(%*{"word": m.word, "definition": m.definition})
-  $(%*{"query": q, "syllables": sylls, "matches": hits})
-
-proc apiAutocomplete(d: Dict; prefix: string): string =
-  if prefix.len == 0: return "[]"
-  let norm = normalizeKey(prefix)
-  # Binary search for first key >= norm
-  var lo = 0; var hi = d.keys.len
-  while lo < hi:
-    let mid = (lo + hi) div 2
-    if d.keys[mid] < norm: lo = mid + 1
-    else: hi = mid
-  var words = newJArray()
-  var i = lo
-  while i < d.keys.len and words.len < 10:
-    if d.keys[i].startsWith(norm):
-      words.add(%d.keys[i])
-      inc i
-    else: break
-  $words
-
-proc serveStatic(path, webDir: string): (HttpCode, string, string) =
-  var rel = if path == "" or path == "/": "index.html" else: path[1..^1]
-  if ".." in rel: return (Http404, "{}", "application/json")
-  let full = webDir / rel
-  if not fileExists(full): return (Http404, "{}", "application/json")
-  let ct = case full.splitFile.ext.toLowerAscii
-    of ".html": "text/html; charset=utf-8"
-    of ".css":  "text/css; charset=utf-8"
-    of ".js":   "application/javascript"
-    of ".svg":  "image/svg+xml"
-    of ".png":  "image/png"
-    of ".ico":  "image/x-icon"
-    else:       "application/octet-stream"
-  (Http200, readFile(full), ct)
-
-proc serveMode(port: int; dictPath, webDir: string) =
-  let d = loadDict(dictPath)
-  stderr.writeLine "loaded " & $d.keys.len & " headwords"
-  var server = newAsyncHttpServer()
-
-  proc cb(req: Request) {.async.} =
-    if req.reqMethod == HttpOptions:
-      await req.respond(Http200, "", jhdr()); return
-    case req.url.path
-    of "/api/lookup":
-      await req.respond(Http200, apiLookup(d, qparam(req.url.query, "q")), jhdr())
-    of "/api/autocomplete":
-      await req.respond(Http200, apiAutocomplete(d, qparam(req.url.query, "q")), jhdr())
-    else:
-      if webDir.len > 0:
-        let (code, body, ct) = serveStatic(req.url.path, webDir)
-        await req.respond(code, body, fhdr(ct))
-      else:
-        await req.respond(Http404, "{}", jhdr())
-
-  stderr.writeLine "wehe listening on :" & $port
-  waitFor server.serve(Port(port), cb)
-
-# ─── CLI ──────────────────────────────────────────────────────────────────────
-
-proc main() =
-  if paramCount() >= 1 and paramStr(1) == "serve":
-    var port     = 8765
-    var dictPath = ""
-    var webDir   = ""
-    var i = 2
-    while i <= paramCount():
-      case paramStr(i)
-      of "--port": inc i; port = parseInt(paramStr(i))
-      of "--db":   inc i; dictPath = paramStr(i)
-      of "--web":  inc i; webDir = paramStr(i)
-      else: discard
-      inc i
-    serveMode(port, dictPath, webDir)
+proc corsHeaders(request: Request): HttpHeaders =
+  result.add(("Access-Control-Allow-Methods", "GET, OPTIONS"))
+  if allowedOrigins.len == 0:
+    result.add(("Access-Control-Allow-Origin", "*"))
     return
+  result.add(("Vary", "Origin"))
+  let origin = request.headers["Origin"]
+  if origin.len > 0 and origin in allowedOrigins:
+    result.add(("Access-Control-Allow-Origin", origin))
 
-  if paramCount() < 1:
-    stderr.writeLine "usage: wehe <word> [dict]"
-    stderr.writeLine "       wehe serve [--port N] [--db PATH] [--web DIR]"
-    quit(1)
+proc jsonHeaders(request: Request): HttpHeaders =
+  result = corsHeaders(request)
+  result.add(("Content-Type", "application/json; charset=utf-8"))
 
-  let word     = paramStr(1)
-  let dictPath = if paramCount() >= 2: paramStr(2) else: ""
-  let d = loadDict(dictPath)
-  let matches = decomposeLookup(d, word)
-  if matches.len == 0:
-    echo "(no matches)"
-    return
+proc qparam(request: Request, name: string): string =
+  let parts = request.uri.split('?', 1)
+  if parts.len < 2: return ""
+  for pair in parts[1].split('&'):
+    let kv = pair.split('=', 1)
+    if kv.len == 2 and kv[0] == name:
+      return decodeUrl(kv[1])
 
-  let width = if isatty(stdout): terminalWidth() else: 80
-  let color = isatty(stdout)
-  for i, m in matches:
-    if i > 0: echo ""
-    printMatch(m, width, color)
+proc apiLookup(request: Request) {.gcsafe.} =
+  {.cast(gcsafe).}:
+    let q = request.qparam("q")
+    var sylls = newJArray()
+    for s in syllabify(q): sylls.add(%s)
+    var hits = newJArray()
+    for m in decomposeLookup(dict, q):
+      hits.add(%*{"word": m.word, "definition": m.definition})
+    request.respond(200, jsonHeaders(request),
+      $(%*{"query": q, "syllables": sylls, "matches": hits}))
 
-when isMainModule:
-  main()
+proc apiAutocomplete(request: Request) {.gcsafe.} =
+  {.cast(gcsafe).}:
+    let prefix = request.qparam("q")
+    if prefix.len == 0:
+      request.respond(200, jsonHeaders(request), "[]"); return
+    let norm = normalizeKey(prefix)
+    var lo = 0; var hi = dict.keys.len
+    while lo < hi:
+      let mid = (lo + hi) div 2
+      if dict.keys[mid] < norm: lo = mid + 1
+      else: hi = mid
+    var words = newJArray()
+    var i = lo
+    while i < dict.keys.len and words.len < 10:
+      if dict.keys[i].startsWith(norm):
+        words.add(%dict.keys[i])
+        inc i
+      else: break
+    request.respond(200, jsonHeaders(request), $words)
+
+proc handleOptions(request: Request) {.gcsafe.} =
+  {.cast(gcsafe).}:
+    var headers = corsHeaders(request)
+    let reqHeaders = request.headers["Access-Control-Request-Headers"]
+    if reqHeaders.len > 0:
+      headers.add(("Access-Control-Allow-Headers", reqHeaders))
+    request.respond(204, headers, "")
+
+var port = 8765
+var i = 1
+while i <= paramCount():
+  case paramStr(i)
+  of "-h", "--help":
+    stdout.write Usage
+    quit 0
+  of "-v", "--version":
+    echo "wehe " & Version
+    quit 0
+  of "--port":
+    inc i
+    if i > paramCount(): die "--port requires a value"
+    try: port = parseInt(paramStr(i))
+    except ValueError: die "--port: not an integer: " & paramStr(i)
+  of "--origin":
+    inc i
+    if i > paramCount(): die "--origin requires a value"
+    allowedOrigins.add paramStr(i)
+  else:
+    die "unknown argument: " & paramStr(i)
+  inc i
+
+var router: Router
+router.get("/api/lookup", apiLookup)
+router.get("/api/autocomplete", apiAutocomplete)
+router.options("/api/lookup", handleOptions)
+router.options("/api/autocomplete", handleOptions)
+
+let server = newServer(router)
+let originMsg =
+  if allowedOrigins.len == 0: "any origin"
+  else: "origins: " & allowedOrigins.join(", ")
+stderr.writeLine "wehe loaded " & $dict.keys.len & " headwords, listening on :" &
+  $port & " (" & originMsg & ")"
+server.serve(Port(port))

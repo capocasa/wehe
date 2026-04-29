@@ -9,44 +9,38 @@ mean" — your dictionary already knows. The interesting question is what
 sub-words live inside it, and what *they* mean.
 
 ```
-$ wehe haipule
-ha
-  Ha, num. adj. The number four ...
-
-i
-  I, prep. ...
-
-pule
-  Pule, s. A prayer ...
-
-ipu
-  Ipu, s. A general name for vessels ...
-
-# ... and so on, for every valid sub-syllable run
+$ curl 'localhost:8765/api/lookup?q=haipule'
+{"query":"haipule","syllables":["ha","i","pu","le"],"matches":[
+  {"word":"ha","definition":"Ha, num. adj. The number four ..."},
+  {"word":"i","definition":"I, prep. ..."},
+  {"word":"pule","definition":"Pule, s. A prayer ..."},
+  {"word":"ipu","definition":"Ipu, s. A general name for vessels ..."},
+  ...
+]}
 ```
 
 ## Install
 
 ```
 nimble install https://github.com/capocasa/wehe
-wehe haipule
+wehe --port 8765
 ```
 
-The dictionary is baked into the binary at compile time. No data files,
-no setup, no `--db` to point at. Just the binary.
+JSON daemon — bring your own frontend. The dictionary is baked in at
+compile time, so there are no data files, no setup, no flags to point at
+anything. Just the binary.
 
-## Serve
-
-```
-wehe serve --port 8765 --web ./public
-```
-
-JSON endpoints:
+## Endpoints
 
 - `GET /api/lookup?q=haipule` — syllabification + every matching sub-word
 - `GET /api/autocomplete?q=hai` — top 10 prefix matches
 
-CORS is wide open. It's a dictionary, not a bank.
+CORS defaults to wide open. It's a dictionary, not a bank. If you'd
+rather pin it to one or more frontends, pass `--origin` (repeatable):
+
+```
+wehe --origin https://hawaiian.example --origin https://other.example
+```
 
 ## Dictionary
 
