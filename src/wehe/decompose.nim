@@ -54,6 +54,19 @@ proc candidates*(word: string): seq[string] =
 
   result = seen
 
+proc effectiveSyl*(word: string): tuple[count: int, root: string, doubled: bool] =
+  ## If `word` is a clean doubling (its syllables split into two equal halves),
+  ## returns (half-count, root, true) — e.g. wehewehe → (2, "wehe", true),
+  ## lolo → (1, "lo", true). Otherwise returns (full-count, word, false).
+  ## Used to sort doubled forms next to their root.
+  let sylls = syllabify(word)
+  let n = sylls.len
+  if n >= 2 and n mod 2 == 0:
+    let half = n div 2
+    if sylls[0 ..< half] == sylls[half ..< n]:
+      return (half, sylls[0 ..< half].join(""), true)
+  (n, word, false)
+
 proc normalizeKey*(s: string): string =
   ## Produce the headword_norm key: lowercase, macrons stripped, okina removed.
   ## Must match the normalization used when building dict.db.

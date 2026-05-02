@@ -1,4 +1,4 @@
-import std/[os, strutils, tables, algorithm, sequtils, json, uri]
+import std/[os, strutils, tables, algorithm, sequtils, json, uri, sets]
 import mummy, mummy/routers
 import wehe/decompose
 
@@ -66,7 +66,11 @@ proc decomposeLookup*(d: Dict; word: string): seq[Match] =
     if normalizeKey(cand) == key: continue
     rest.add lookup(d, cand)
   rest.sort(proc(a, b: Match): int =
-    cmp(syllabify(b.word).len, syllabify(a.word).len))
+    let ka = effectiveSyl(a.word)
+    let kb = effectiveSyl(b.word)
+    if ka.count != kb.count: return cmp(kb.count, ka.count)
+    if ka.root != kb.root: return cmp(ka.root, kb.root)
+    cmp(int(ka.doubled), int(kb.doubled)))
   result.add rest
 
 let dict = parseDict(embeddedDict)
@@ -98,13 +102,63 @@ proc qparam(request: Request, name: string): string =
 proc apiLookup(request: Request) {.gcsafe.} =
   {.cast(gcsafe).}:
     let q = request.qparam("q")
+    # Build the list of syllables for the query word
     var sylls = newJArray()
-    for s in syllabify(q): sylls.add(%s)
-    var hits = newJArray()
-    for m in decomposeLookup(dict, q):
-      hits.add(%*{"word": m.word, "definition": m.definition})
+    let syllableSeq = syllabify(q)
+    for s in syllableSeq:
+      sylls.add(%s)
+
+    # Generate all permutations of any non‑empty subset of the syllable list.
+    # Returns strings formed by any ordering of 1..N syllables.
+    proc genPerms(arr: seq[string]): seq[string] =
+      var resultSeq: seq[string] = @[]
+      var seen = initHashSet[string]()
+      proc recurse(current: string; remaining: seq[string]) =
+        for i in 0..<remaining.len:
+          let next = current & remaining[i]
+          if not seen.containsOrIncl(next):
+            resultSeq.add(next)
+          var newRem: seq[string] = @[]
+          if i > 0:
+            newRem = remaining[0..i-1]
+          if i + 1 < remaining.len:
+            newRem = newRem & remaining[i+1..^1]
+          if newRem.len > 0:
+            recurse(next, newRem)
+      recurse("", arr)
+      return resultSeq
+
+    # Build a map of word → definition array and syllable count.
+    var permDefs = initTable[string, seq[string]]()
+    var permCount = initTable[string, int]()
+
+    # Insert each individual syllable (empty definition array, count = 1).
+    for s in syllableSeq:
+      permDefs[s] = @[]
+      permCount[s] = 1
+
+    var seenPerms = initHashSet[string]()
+    for permStr in genPerms(syllableSeq):
+      if not seenPerms.containsOrIncl(permStr):
+        let dictMatches = lookup(dict, permStr)
+        if dictMatches.len > 0:
+          for m in dictMatches:
+            # Ensure map entry exists.
+            if not permDefs.hasKey(m.word):
+              permDefs[m.word] = @[]
+              permCount[m.word] = syllabify(m.word).len
+            # Append unique definition.
+            if m.definition notin permDefs[m.word]:
+              permDefs[m.word].add(m.definition)
+
+    # Convert the map into the JSON array.
+    var permutations = newJArray()
+    for w, defs in permDefs.pairs:
+      permutations.add(%*{"word": w, "definition": defs, "syllableCount": permCount[w]})
+
+    # Return the response with permutations only.
     request.respond(200, jsonHeaders(request),
-      $(%*{"query": q, "syllables": sylls, "matches": hits}))
+      $(%*{"query": q, "permutations": permutations}))
 
 proc apiAutocomplete(request: Request) {.gcsafe.} =
   {.cast(gcsafe).}:
