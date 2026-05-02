@@ -151,10 +151,25 @@ proc apiLookup(request: Request) {.gcsafe.} =
             if m.definition notin permDefs[m.word]:
               permDefs[m.word].add(m.definition)
 
+    # Add doubled versions of each generated permutation (including syllables)
+    # and merge any dictionary definitions for them.
+    var existingKeys = toSeq(permDefs.keys)
+    for w in existingKeys:
+      let doubled = w & w
+      let dictMatches = lookup(dict, doubled)
+      if dictMatches.len > 0:
+        if not permDefs.hasKey(doubled):
+          permDefs[doubled] = @[]
+          permCount[doubled] = syllabify(doubled).len
+        for m in dictMatches:
+          if m.definition notin permDefs[doubled]:
+            permDefs[doubled].add(m.definition)
+
     # Convert the map into the JSON array.
     var permutations = newJArray()
     for w, defs in permDefs.pairs:
-      permutations.add(%*{"word": w, "definition": defs, "syllableCount": permCount[w]})
+      # Include a `count` field so the frontend can display the number of definitions.
+      permutations.add(%*{"word": w, "definition": defs, "syllableCount": permCount[w], "count": defs.len})
 
     # Return the response with permutations only.
     request.respond(200, jsonHeaders(request),
