@@ -14,9 +14,38 @@
 import std/[httpclient, strutils, tables, algorithm, sequtils]
 import wehe/decompose
 
+# Global accumulator for hyphenation corrections: each entry is (original, corrected)
+var hyphenChanges: seq[(string, string)] = @[]
+
+# Fix hyphenated word breaks of the form "word- <whitespace>" by removing the hyphen
+# and following spaces, joining the split words. Records each change.
+proc fixHyphens(s: string): string =
+  var resStr = newStringOfCap(s.len)
+  var i = 0
+  while i < s.len:
+    if i + 2 < s.len and s[i].isAlphaAscii and s[i+1] == '-' and s[i+2].isSpaceAscii:
+      # Preserve the preceding character
+      resStr.add(s[i])
+      var k = i + 2
+      # Skip all consecutive whitespace after the hyphen
+      while k < s.len and s[k].isSpaceAscii:
+        inc k
+      # Record the removed hyphen and spaces
+      let orig = s[i+1 .. k-1]
+      hyphenChanges.add((orig, ""))
+      # Continue processing after the spaces
+      i = k
+      continue
+    else:
+      resStr.add(s[i])
+      inc i
+  result = resStr
+
 const
   djvuUrl = "https://archive.org/download/ofhawadictionary00andrrich/ofhawadictionary00andrrich_djvu.txt"
   txtOut  = "src-asset/andrews1922.txt"
+  # File to log hyphenation corrections for manual review
+  correctionsOut = "src-asset/andrews1922_hyphen_fixes.txt"
   bodyStartMarker = "HAWAIIAN  LANGUAGE"   # second occurrence: just before "A (a). ..."
   bodyEndMarker   = "HAWAIIAN    PLACE    NAMES"
 
@@ -88,7 +117,9 @@ proc parseAndrews(text: string): OrderedTable[string, seq[string]] =
 
   proc commit() =
     if curKey.len == 0 or curLines.len == 0: return
-    let def = collapseSpaces(curLines.join(" ")).strip
+    var def = collapseSpaces(curLines.join(" ")).strip
+    # Apply hyphenation fixes and record changes
+    def = fixHyphens(def)
     if def.len < 5: return
     if curKey notin entries:
       entries[curKey] = @[]
@@ -146,6 +177,13 @@ proc main() =
   let senses = toSeq(entries.values).mapIt(it.len).foldl(a + b, 0)
   stderr.writeLine $total & " headwords, " & $senses & " total senses"
   writeTxt(entries)
+  # Write hyphenation correction log if any changes were made
+  if hyphenChanges.len > 0:
+    var corrFile = open(correctionsOut, fmWrite)
+    for (orig, corrected) in hyphenChanges:
+      corrFile.writeLine orig & " => " & corrected
+    corrFile.close()
+    stderr.writeLine "wrote hyphen corrections to " & correctionsOut
   echo "done"
 
 main()
